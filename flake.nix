@@ -43,6 +43,10 @@
       devShells = forAllSystems (pkgs: {
         default =
           let
+            gpt2Tokenizer = pkgs.fetchurl {
+              url = "https://huggingface.co/openai-community/gpt2/resolve/607a30d/tokenizer.json";
+              hash = "sha256-hBTKuSTYubMwE/DSIcWGLzZe6b45xcK/ropanpcEeKY=";
+            };
             toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
             python = pkgs.python3.withPackages (ps: [
               ps.torch
@@ -50,6 +54,7 @@
             ]);
           in
           pkgs.mkShell {
+            env.GPT2_TOKENIZER = "${gpt2Tokenizer}";
             packages = [
               toolchain
               pkgs.rust-analyzer
