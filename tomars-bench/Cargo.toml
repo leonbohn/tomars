@@ -1,12 +1,12 @@
 [package]
-name = "tomas-bench"
+name = "tomars-bench"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-tomas-core = { path = "../tomas-core" }
-tomas-regex = { path = "../tomas-regex" }
+tomars-core = { path = "../tomars-core" }
+tomars-regex = { path = "../tomars-regex" }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -790,24 +790,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "tomas-bench"
+name = "tomars-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "tomas-core",
- "tomas-regex",
+ "tomars-core",
+ "tomars-regex",
 ]
 
 [[package]]
-name = "tomas-cfg"
+name = "tomars-cfg"
 version = "0.1.0"
 dependencies = [
  "automata",
- "tomas-regex",
+ "tomars-regex",
 ]
 
 [[package]]
-name = "tomas-core"
+name = "tomars-core"
 version = "0.1.0"
 dependencies = [
  "automata",
@@ -817,11 +817,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "tomas-python"
+name = "tomars-python"
 version = "0.1.0"
 
 [[package]]
-name = "tomas-regex"
+name = "tomars-regex"
 version = "0.1.0"
 dependencies = [
  "automata",

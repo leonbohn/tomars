@@ -1,8 +1,8 @@
 [package]
-name = "tomas-cfg"
+name = "tomars-cfg"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 automata = { workspace = true }
-tomas-regex = { path = "../tomas-regex" }
+tomars-regex = { path = "../tomars-regex" }

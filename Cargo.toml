@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tomas-bench", "tomas-cfg", "tomas-core", "tomas-python", "tomas-regex"]
+members = ["tomars-bench", "tomars-cfg", "tomars-core", "tomars-python", "tomars-regex"]
 
 [workspace.dependencies]
 automata = { path = "../automata" }
