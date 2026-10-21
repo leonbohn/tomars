@@ -1,0 +1,12 @@
+[package]
+name = "tomas-regex"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+automata = { workspace = true }
+regex-syntax = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+regex = "1.13"

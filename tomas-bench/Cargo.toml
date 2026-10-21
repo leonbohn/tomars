@@ -1,0 +1,14 @@
+[package]
+name = "tomas-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tomas-core = { path = "../tomas-core" }
+tomas-regex = { path = "../tomas-regex" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# Benchmark targets are added in Phase 2.1 once there is code worth timing.
