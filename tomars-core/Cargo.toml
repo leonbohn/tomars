@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 automata = { workspace = true }
 fixedbitset = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# use this as oracle for testing that parsing works as intended
+tokenizers = "1.0.0-rc.3"
