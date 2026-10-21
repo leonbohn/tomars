@@ -40,11 +40,11 @@ Das Sprachmodell ist **nur Mittel zum Zweck**. Kein eigener Transformer als Show
 
 ### 0.1 Repository
 - Cargo-Workspace anlegen mit den Crates:
-  - `tomas-core`: Tokenizer-Laden, Trie, Masken, Cache
-  - `tomas-regex`: Regex → NFA über Bytes → DFA (Adapter zur Automaten-Crate)
-  - `tomas-cfg`: später, kontextfreie Grammatiken
-  - `tomas-bench`: Benchmarks
-  - `tomas-py`: später, Python-Bindings für das Experiment
+  - `tomars-core`: Tokenizer-Laden, Trie, Masken, Cache
+  - `tomars-regex`: Regex → NFA über Bytes → DFA (Adapter zur Automaten-Crate)
+  - `tomars-cfg`: später, kontextfreie Grammatiken
+  - `tomars-bench`: Benchmarks
+  - `tomars-python`: später, Python-Bindings für das Experiment
 - Abhängigkeiten: eigene Automaten-Crate, `tokenizers` oder `serde_json` (für `tokenizer.json`), `regex-syntax`, `fixedbitset` oder eigenes Bitset, `proptest`, `criterion`.
 - Nix-Flake mit devShell (Rust-Toolchain, `cargo-nextest`, Python mit `torch` CPU, `safetensors`, `maturin` für später).
 - CI: `cargo test`, `cargo clippy`, `cargo fmt --check`.
