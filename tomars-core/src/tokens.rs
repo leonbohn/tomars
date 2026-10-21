@@ -15,7 +15,7 @@ const fn build_unicode_to_byte_table() -> [Option<u8>; 324] {
     let mut value = 256usize;
 
     while b < 256 {
-        if b < 0x21 || (b > 0x7E && b < 0xA1) || b == 0xAC {
+        if b < 0x21 || (b > 0x7E && b < 0xA1) || b == 0xAD {
             tbl[value] = Some(b as u8);
             value += 1;
         } else {
@@ -40,6 +40,16 @@ const fn build_unicode_to_byte_table() -> [Option<u8>; 324] {
 
 fn unicode_to_byte(c: char) -> Option<u8> {
     UNICODE_TO_BYTE.get(c as usize).copied().flatten()
+}
+fn byte_to_unicode(needle: u8) -> char {
+    let index = UNICODE_TO_BYTE
+        .iter()
+        .enumerate()
+        .find_map(|(index, maybe_byte)| {
+            maybe_byte.and_then(|byte| if byte == needle { Some(index) } else { None })
+        });
+    char::from_u32(index.expect("a byte cannot be found in lookup table") as u32)
+        .expect("conversion to char must be possible")
 }
 
 static END_OF_TEXT_TOKEN: &str = "<|endoftext|>";
@@ -131,5 +141,54 @@ struct Pretokenizer {
 impl Pretokenizer {
     pub fn r#type(&self) -> &str {
         &self.r#type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use proptest::{num::u8, prelude::*};
+
+    use super::{UNICODE_TO_BYTE, byte_to_unicode, unicode_to_byte};
+
+    proptest! {
+        #[test]
+        fn unicode_to_byte_reversible(byte in u8::ANY) {
+            assert_eq!(Some(byte), unicode_to_byte(byte_to_unicode(byte)))
+        }
+    }
+
+    #[test]
+    fn unicode_to_byte_individual_values() {
+        assert_eq!(unicode_to_byte('Ġ'), Some(0x20));
+        assert_eq!(unicode_to_byte('Ċ'), Some(0x0A));
+        assert_eq!(unicode_to_byte('¬'), Some(0xAC));
+        assert_eq!(unicode_to_byte('\u{0143}'), Some(0xAD));
+    }
+
+    #[test]
+    fn unicode_to_byte_bijectivity() {
+        let Some(found) = UNICODE_TO_BYTE
+            .iter()
+            .copied()
+            .filter(Option::is_some)
+            .collect::<Option<HashSet<_>>>()
+        else {
+            panic!("should never happen, we filtered out Nones");
+        };
+        assert_eq!(
+            found,
+            (0..=255).into_iter().collect::<HashSet<_>>(),
+            "mapping encoded by table is not surjective"
+        );
+
+        // it suffices now to verify that precisely 256 entries are not None
+        let non_vacant_entry_count = UNICODE_TO_BYTE
+            .iter()
+            .copied()
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(non_vacant_entry_count, 256, "mapping not injective");
     }
 }
