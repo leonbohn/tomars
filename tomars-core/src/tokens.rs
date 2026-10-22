@@ -8,24 +8,41 @@ use serde_json::Value;
 
 use thiserror::Error;
 
+/// Represents the vocabulary of a tokenizer, where each token is represented
+/// as a sequence of bytes.
+#[derive(Debug, Clone)]
 pub struct Vocabulary {
     tokens: Vec<Vec<u8>>,
     eos: TokenId,
 }
 
 impl Vocabulary {
+    /// Construct from an instance of [`std::io::Read`].
+    pub fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, TokenizerLoadError> {
+        Tokenizer::from_reader(reader)?.into_vocabulary()
+    }
+
+    /// Construct from a tokenizer given as a file.
+    pub fn load_from_file<P: AsRef<Path>>(file_path: P) -> Result<Self, TokenizerLoadError> {
+        Tokenizer::load_from_file(file_path)?.into_vocabulary()
+    }
+
     pub(super) fn from_parts(tokens: Vec<Vec<u8>>, eos: TokenId) -> Self {
         Self { tokens, eos }
     }
 
+    /// Get the bytes associated with a given [`TokenId`].
     pub fn token_bytes(&self, id: TokenId) -> Option<&[u8]> {
         self.tokens.get(id.0 as usize).map(AsRef::as_ref)
     }
 
+    /// Get the [`TokenId`] of the special end of output token.
     pub fn eos(&self) -> TokenId {
         self.eos
     }
 
+    /// Returns the size of the vocabulary, which is the number of disinct
+    /// tokens. Also counts the eos token.
     pub fn size(&self) -> usize {
         self.tokens.len() + 1
     }
@@ -67,6 +84,7 @@ const fn build_unicode_to_byte_table() -> [Option<u8>; 324] {
 fn unicode_to_byte(c: char) -> Option<u8> {
     UNICODE_TO_BYTE.get(c as usize).copied().flatten()
 }
+#[cfg(test)]
 fn byte_to_unicode(needle: u8) -> char {
     let index = UNICODE_TO_BYTE
         .iter()
@@ -81,14 +99,19 @@ fn byte_to_unicode(needle: u8) -> char {
 static END_OF_TEXT_TOKEN: &str = "<|endoftext|>";
 
 #[derive(Deserialize, Debug)]
-struct Tokenizer {
+pub(crate) struct Tokenizer {
     added_tokens: Vec<AddedToken>,
     normalizer: Option<Value>,
     pre_tokenizer: Option<Pretokenizer>,
     model: BytePairEncoding,
 }
 
+/// Ways in which the loading of a tokenizer file and the construction of a
+/// [`Vocabulary`] can fail.
+/// The erorr variants together with the associated error messages should
+/// hopefully document themselves.
 #[derive(Debug, Error)]
+#[allow(missing_docs)]
 pub enum TokenizerLoadError {
     #[error("could not read token file")]
     FileReadError(#[from] std::io::Error),
@@ -117,13 +140,13 @@ pub enum TokenizerLoadError {
 }
 
 impl Tokenizer {
-    pub fn load_from_file<P: AsRef<Path>>(file_path: P) -> Result<Self, TokenizerLoadError> {
+    pub(crate) fn load_from_file<P: AsRef<Path>>(file_path: P) -> Result<Self, TokenizerLoadError> {
         let file = std::fs::File::open(file_path)?;
         let reader = std::io::BufReader::new(file);
         Self::from_reader(reader)
     }
 
-    pub fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, TokenizerLoadError> {
+    pub(crate) fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, TokenizerLoadError> {
         let tokenizer: Tokenizer = serde_json::from_reader(reader)?;
 
         if tokenizer.normalizer.is_some() {
@@ -144,7 +167,7 @@ impl Tokenizer {
         Ok(tokenizer)
     }
 
-    pub fn into_vocabulary(self) -> Result<Vocabulary, TokenizerLoadError> {
+    pub(crate) fn into_vocabulary(self) -> Result<Vocabulary, TokenizerLoadError> {
         let Some(eos) = self.added_tokens.into_iter().find_map(|added| {
             if added.special && added.content == END_OF_TEXT_TOKEN {
                 Some(added.id)
@@ -200,47 +223,49 @@ impl Tokenizer {
     }
 }
 
+/// Newtype wrapper around a token id, wraps an `u32`.
 #[derive(Deserialize, Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-struct TokenId(pub(crate) u32);
+pub struct TokenId(pub(crate) u32);
 
 #[derive(Deserialize, Debug)]
-struct AddedToken {
+pub(crate) struct AddedToken {
     id: TokenId,
     content: String,
     special: bool,
 }
 
 #[derive(Deserialize, Debug)]
-struct BytePairEncoding {
+pub(crate) struct BytePairEncoding {
     vocab: HashMap<String, TokenId>,
 }
 
+#[allow(dead_code)]
 impl BytePairEncoding {
-    pub fn get_token_id(&self, token: &str) -> Option<TokenId> {
+    pub(crate) fn get_token_id(&self, token: &str) -> Option<TokenId> {
         self.vocab.get(token).map(ToOwned::to_owned)
     }
-    pub fn id_iter(&self) -> impl Iterator<Item = TokenId> {
+    pub(crate) fn id_iter(&self) -> impl Iterator<Item = TokenId> {
         self.vocab.values().copied()
     }
-    pub fn token_iter(&self) -> impl Iterator<Item = &String> {
+    pub(crate) fn token_iter(&self) -> impl Iterator<Item = &String> {
         self.vocab.keys()
     }
-    pub fn contains_token(&self, token: &str) -> bool {
+    pub(crate) fn contains_token(&self, token: &str) -> bool {
         self.vocab.contains_key(token)
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&String, TokenId)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, TokenId)> {
         self.vocab.iter().map(|(a, b)| (a, *b))
     }
 }
 
 #[derive(Deserialize, Debug)]
-struct Pretokenizer {
+pub(crate) struct Pretokenizer {
     r#type: String,
 }
 
 impl Pretokenizer {
-    pub fn r#type(&self) -> &str {
+    pub(crate) fn r#type(&self) -> &str {
         &self.r#type
     }
 }
