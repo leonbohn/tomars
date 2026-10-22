@@ -1,9 +1,35 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use thiserror::Error;
+
+pub struct Vocabulary {
+    tokens: Vec<Vec<u8>>,
+    eos: TokenId,
+}
+
+impl Vocabulary {
+    pub(super) fn from_parts(tokens: Vec<Vec<u8>>, eos: TokenId) -> Self {
+        Self { tokens, eos }
+    }
+
+    pub fn token_bytes(&self, id: TokenId) -> Option<&[u8]> {
+        self.tokens.get(id.0 as usize).map(AsRef::as_ref)
+    }
+
+    pub fn eos(&self) -> TokenId {
+        self.eos
+    }
+
+    pub fn size(&self) -> usize {
+        self.tokens.len() + 1
+    }
+}
 
 // We build a static lookup table for conversion of unicode to byte
 
@@ -68,28 +94,40 @@ pub enum TokenizerLoadError {
     FileReadError(#[from] std::io::Error),
     #[error("could noto deserialize token file")]
     DeserializeError(#[from] serde_json::Error),
-    #[error("tokenizer must not use deserialization, are you sure you are using GPT-2?")]
+    #[error("tokenizer must not use normalization, are you sure you are using GPT-2?")]
     NormalizedTokenizer,
-    #[error("the endoftext token should not be present in the model itself")]
-    EndOfTextInVocabulary,
     #[error("tokenizer does not use byte level encoding")]
     NonByteLevel,
     #[error("tokenizer file is malformed")]
     MalformedFile,
+    #[error("vocabulary contains empty token with id {0}")]
+    EmptyTokenInVocabulary(u32),
+    #[error("invalid character in token {0}")]
+    InvalidTokenCharacter(char),
+    #[error("duplicate token id {0}")]
+    DuplicateTokenId(u32),
+    #[error("missing token")]
+    MissingTokenId,
+    #[error("token id out of range {0}")]
+    OutOfRangeTokenId(u32),
+    #[error("end of text token is missing")]
+    EndOfTextTokenMissing,
+    #[error("vocabulary does not contain all single bytes as tokens")]
+    ByteMissingFromVocabulary,
 }
 
 impl Tokenizer {
     pub fn load_from_file<P: AsRef<Path>>(file_path: P) -> Result<Self, TokenizerLoadError> {
         let file = std::fs::File::open(file_path)?;
         let reader = std::io::BufReader::new(file);
+        Self::from_reader(reader)
+    }
+
+    pub fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, TokenizerLoadError> {
         let tokenizer: Tokenizer = serde_json::from_reader(reader)?;
 
         if tokenizer.normalizer.is_some() {
             return Err(TokenizerLoadError::NormalizedTokenizer);
-        }
-
-        if !tokenizer.model.contains_token(&END_OF_TEXT_TOKEN) {
-            return Err(TokenizerLoadError::EndOfTextInVocabulary);
         }
 
         if tokenizer
@@ -103,12 +141,66 @@ impl Tokenizer {
         if tokenizer.model.vocab.is_empty() || tokenizer.added_tokens.is_empty() {
             return Err(TokenizerLoadError::MalformedFile);
         }
-
         Ok(tokenizer)
+    }
+
+    pub fn into_vocabulary(self) -> Result<Vocabulary, TokenizerLoadError> {
+        let Some(eos) = self.added_tokens.into_iter().find_map(|added| {
+            if added.special && added.content == END_OF_TEXT_TOKEN {
+                Some(added.id)
+            } else {
+                None
+            }
+        }) else {
+            return Err(TokenizerLoadError::EndOfTextTokenMissing);
+        };
+
+        let mut tokens: Vec<Option<Vec<u8>>> = std::iter::repeat_n(None, eos.0 as usize).collect();
+
+        for (unicode, token_id) in self.model.vocab.into_iter() {
+            let index = token_id.0;
+            if index > eos.0 {
+                return Err(TokenizerLoadError::OutOfRangeTokenId(index));
+            }
+            if index == eos.0 {
+                continue;
+            }
+
+            let mut token = Vec::with_capacity(unicode.len());
+            for chr in unicode.chars() {
+                let Some(byte) = unicode_to_byte(chr) else {
+                    return Err(TokenizerLoadError::InvalidTokenCharacter(chr));
+                };
+                token.push(byte);
+            }
+            if token.is_empty() {
+                return Err(TokenizerLoadError::EmptyTokenInVocabulary(index));
+            }
+
+            if tokens[index as usize].is_some() {
+                return Err(TokenizerLoadError::DuplicateTokenId(index));
+            }
+
+            tokens[index as usize] = Some(token);
+        }
+
+        let Some(tokens) = tokens.into_iter().collect::<Option<Vec<_>>>() else {
+            return Err(TokenizerLoadError::MissingTokenId);
+        };
+
+        let single_byte_tokens = tokens
+            .iter()
+            .filter_map(|tok| if tok.len() == 1 { Some(tok[0]) } else { None })
+            .collect::<HashSet<_>>();
+        if single_byte_tokens.len() != 256 {
+            return Err(TokenizerLoadError::ByteMissingFromVocabulary);
+        }
+
+        Ok(Vocabulary::from_parts(tokens, eos))
     }
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone, Copy, Hash, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
 struct TokenId(pub(crate) u32);
 
@@ -128,8 +220,17 @@ impl BytePairEncoding {
     pub fn get_token_id(&self, token: &str) -> Option<TokenId> {
         self.vocab.get(token).map(ToOwned::to_owned)
     }
+    pub fn id_iter(&self) -> impl Iterator<Item = TokenId> {
+        self.vocab.values().copied()
+    }
+    pub fn token_iter(&self) -> impl Iterator<Item = &String> {
+        self.vocab.keys()
+    }
     pub fn contains_token(&self, token: &str) -> bool {
         self.vocab.contains_key(token)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&String, TokenId)> {
+        self.vocab.iter().map(|(a, b)| (a, *b))
     }
 }
 
@@ -146,11 +247,13 @@ impl Pretokenizer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use proptest::{num::u8, prelude::*};
+    use serde_json::{Map, Value, json};
     use std::collections::HashSet;
 
-    use proptest::{num::u8, prelude::*};
-
-    use super::{UNICODE_TO_BYTE, byte_to_unicode, unicode_to_byte};
+    const VOCAB_SIZE: u64 = 50257;
+    const EOS_ID: u64 = VOCAB_SIZE - 1;
 
     proptest! {
         #[test]
@@ -160,11 +263,13 @@ mod tests {
     }
 
     #[test]
-    fn unicode_to_byte_individual_values() {
-        assert_eq!(unicode_to_byte('Ġ'), Some(0x20));
-        assert_eq!(unicode_to_byte('Ċ'), Some(0x0A));
-        assert_eq!(unicode_to_byte('¬'), Some(0xAC));
+    fn unicode_to_byte_known_values() {
+        assert_eq!(unicode_to_byte('\u{0120}'), Some(0x20));
+        assert_eq!(unicode_to_byte('\u{010A}'), Some(0x0A));
+        assert_eq!(unicode_to_byte('\u{AC}'), Some(0xAC));
         assert_eq!(unicode_to_byte('\u{0143}'), Some(0xAD));
+        assert_eq!(unicode_to_byte(' '), None);
+        assert_eq!(unicode_to_byte('\u{AD}'), None);
     }
 
     #[test]
@@ -190,5 +295,278 @@ mod tests {
             .filter(Option::is_some)
             .count();
         assert_eq!(non_vacant_entry_count, 256, "mapping not injective");
+    }
+
+    // ---------------------------------------------------------------- fixtures
+
+    /// Bytes -> the string that would stand in the tokenizer file.
+    fn encoded(bytes: &[u8]) -> String {
+        bytes.iter().map(|&b| byte_to_unicode(b)).collect()
+    }
+
+    /// Structurally valid, GPT-2-sized tokenizer file with a synthetic vocabulary:
+    /// ids 0..=255 are the single-byte tokens (id == byte), ids 256..EOS_ID are
+    /// two-byte tokens in lexicographic order, EOS (`<|endoftext|>`) has the last id
+    /// and is only listed in `added_tokens`.
+    fn valid_tokenizer() -> Value {
+        let mut vocab = Map::new();
+        for b in 0..=255u8 {
+            vocab.insert(encoded(&[b]), json!(b));
+        }
+        let mut id = 256u64;
+        'fill: for a in 0..=255u8 {
+            for b in 0..=255u8 {
+                if id == EOS_ID {
+                    break 'fill;
+                }
+                vocab.insert(encoded(&[a, b]), json!(id));
+                id += 1;
+            }
+        }
+        json!({
+            "added_tokens": [{
+                "id": EOS_ID,
+                "content": "<|endoftext|>",
+                "special": true,
+                "single_word": false,
+                "lstrip": false,
+                "rstrip": false,
+                "normalized": true
+            }],
+            "normalizer": null,
+            "pre_tokenizer": { "type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true },
+            "model": { "vocab": vocab }
+        })
+    }
+
+    fn vocab_mut(v: &mut Value) -> &mut Map<String, Value> {
+        v["model"]["vocab"].as_object_mut().unwrap()
+    }
+
+    fn key_of(v: &Value, id: u64) -> String {
+        v["model"]["vocab"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, value)| value.as_u64() == Some(id))
+            .map(|(key, _)| key.clone())
+            .unwrap()
+    }
+
+    /// Swap the string of token `id` for `new_key`; size and id density stay intact,
+    /// so only the property under test is violated.
+    fn replace_token(v: &mut Value, id: u64, new_key: &str) {
+        let old = key_of(v, id);
+        let vocab = vocab_mut(v);
+        vocab.remove(&old);
+        vocab.insert(new_key.to_string(), json!(id));
+    }
+
+    fn load(v: &Value) -> Result<Vocabulary, TokenizerLoadError> {
+        Tokenizer::from_reader(v.to_string().as_bytes())?.into_vocabulary()
+    }
+
+    fn load_mutated(f: impl FnOnce(&mut Value)) -> Result<Vocabulary, TokenizerLoadError> {
+        let mut v = valid_tokenizer();
+        f(&mut v);
+        load(&v)
+    }
+
+    // ------------------------------------------------------------ positive tests
+
+    #[test]
+    fn accepts_valid_tokenizer() {
+        let vocab = load(&valid_tokenizer()).unwrap();
+        assert_eq!(vocab.size(), VOCAB_SIZE as usize);
+        assert_eq!(vocab.eos(), TokenId(EOS_ID as u32));
+    }
+
+    #[test]
+    fn single_byte_tokens_decode_to_their_byte() {
+        let vocab = load(&valid_tokenizer()).unwrap();
+        for b in 0..=255u8 {
+            assert_eq!(
+                vocab.token_bytes(TokenId(b as u32)),
+                Some(&[b][..]),
+                "byte {b:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_byte_tokens_decode_in_order() {
+        let vocab = load(&valid_tokenizer()).unwrap();
+        assert_eq!(vocab.token_bytes(TokenId(256)), Some(&[0u8, 0][..]));
+        assert_eq!(vocab.token_bytes(TokenId(257)), Some(&[0u8, 1][..]));
+        assert_eq!(vocab.token_bytes(TokenId(256 + 256)), Some(&[1u8, 0][..]));
+    }
+
+    #[test]
+    fn eos_is_not_a_regular_token() {
+        let vocab = load(&valid_tokenizer()).unwrap();
+        assert_eq!(vocab.token_bytes(vocab.eos()), None);
+        assert_eq!(vocab.token_bytes(TokenId(EOS_ID as u32 + 1)), None);
+    }
+
+    #[test]
+    fn eos_listed_in_vocab_with_matching_id_is_accepted_and_skipped() {
+        let mut v = valid_tokenizer();
+        vocab_mut(&mut v).insert("<|endoftext|>".into(), json!(EOS_ID));
+        let vocab = load(&v).unwrap();
+        assert_eq!(vocab.token_bytes(vocab.eos()), None);
+        assert_eq!(vocab.size(), VOCAB_SIZE as usize);
+    }
+
+    // ------------------------------------------------- negative tests: file form
+
+    #[test]
+    fn rejects_normalizer() {
+        let r = load_mutated(|v| v["normalizer"] = json!({ "type": "NFC" }));
+        assert!(matches!(r, Err(TokenizerLoadError::NormalizedTokenizer)));
+    }
+
+    #[test]
+    fn rejects_non_byte_level_pre_tokenizer() {
+        let r = load_mutated(|v| v["pre_tokenizer"] = json!({ "type": "Metaspace" }));
+        assert!(matches!(r, Err(TokenizerLoadError::NonByteLevel)));
+    }
+
+    #[test]
+    fn rejects_missing_pre_tokenizer() {
+        let r = load_mutated(|v| v["pre_tokenizer"] = Value::Null);
+        assert!(matches!(r, Err(TokenizerLoadError::NonByteLevel)));
+    }
+
+    #[test]
+    fn rejects_missing_added_tokens() {
+        // Depending on your implementation this is MalformedFile or a dedicated EOS error.
+        let r = load_mutated(|v| v["added_tokens"] = json!([]));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn rejects_garbage_json() {
+        let r = Tokenizer::from_reader(&b"{ not json"[..]);
+        assert!(matches!(r, Err(TokenizerLoadError::DeserializeError(_))));
+    }
+
+    // -------------------------------------------- negative tests: vocabulary
+
+    #[test]
+    fn rejects_empty_token() {
+        let r = load_mutated(|v| replace_token(v, 300, ""));
+        assert!(matches!(
+            r,
+            Err(TokenizerLoadError::EmptyTokenInVocabulary(300))
+        ));
+    }
+
+    #[test]
+    fn rejects_character_outside_byte_table() {
+        // a plain space never occurs in a byte-level vocabulary (it is encoded as 'Ġ')
+        let r = load_mutated(|v| replace_token(v, 300, " "));
+        assert!(matches!(
+            r,
+            Err(TokenizerLoadError::InvalidTokenCharacter(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_vocabulary_missing_a_single_byte_token() {
+        // replace the token for byte 0x41 by an unused two-byte token
+        let r = load_mutated(|v| replace_token(v, 0x41, &encoded(&[255, 255])));
+        assert!(matches!(
+            r,
+            Err(TokenizerLoadError::ByteMissingFromVocabulary)
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_id() {
+        // token 300 gets id 301: 301 is now used twice, 300 is a gap, size unchanged
+        let r = load_mutated(|v| {
+            let key = key_of(v, 300);
+            vocab_mut(v).insert(key, json!(301));
+        });
+        assert!(matches!(r, Err(TokenizerLoadError::DuplicateTokenId(301))));
+    }
+
+    #[test]
+    fn rejects_gap_in_ids() {
+        // should detect that token with id 300 is missing
+        let r = load_mutated(|v| {
+            let key = key_of(v, 300);
+            vocab_mut(v).remove(&key);
+        });
+        assert!(matches!(r, Err(TokenizerLoadError::MissingTokenId)));
+    }
+
+    #[test]
+    fn rejects_id_beyond_eos() {
+        // EOS is expected to carry the largest id
+        let r = load_mutated(|v| {
+            vocab_mut(v).insert(encoded(&[255, 255]), json!(EOS_ID + 5));
+        });
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn rejects_eos_in_vocab_with_different_id() {
+        let r = load_mutated(|v| {
+            vocab_mut(v).insert("<|endoftext|>".into(), json!(5));
+        });
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn rejects_eos_that_is_not_the_last_id() {
+        let r = load_mutated(|v| v["added_tokens"][0]["id"] = json!(100));
+        assert!(r.is_err());
+    }
+
+    // ------------------------------------------------- real file (optional)
+
+    fn real_vocabulary() -> Option<Vocabulary> {
+        let Ok(path) = std::env::var("GPT2_TOKENIZER") else {
+            eprintln!("GPT2_TOKENIZER not set, skipping");
+            return None;
+        };
+        Some(
+            Tokenizer::load_from_file(path)
+                .unwrap()
+                .into_vocabulary()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn real_gpt2_known_tokens() {
+        let Some(vocab) = real_vocabulary() else {
+            return;
+        };
+        assert_eq!(vocab.size(), 50257);
+        assert_eq!(vocab.eos(), TokenId(50256));
+        // ids taken from tokenizer.json: "Ġpart":636,"fter":637,"Ġkn":638,"Ġbec":639,"Ġtime":640
+        let expected: [(u32, &[u8]); 5] = [
+            (636, b" part"),
+            (637, b"fter"),
+            (638, b" kn"),
+            (639, b" bec"),
+            (640, b" time"),
+        ];
+        for (id, bytes) in expected {
+            assert_eq!(vocab.token_bytes(TokenId(id)), Some(bytes), "id {id}");
+        }
+    }
+
+    #[test]
+    fn real_gpt2_has_no_empty_tokens() {
+        let Some(vocab) = real_vocabulary() else {
+            return;
+        };
+        for id in 0..50256u32 {
+            let bytes = vocab.token_bytes(TokenId(id)).expect("dense ids");
+            assert!(!bytes.is_empty(), "id {id}");
+        }
     }
 }
