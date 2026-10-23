@@ -228,6 +228,19 @@ impl Tokenizer {
 #[serde(transparent)]
 pub struct TokenId(pub(crate) u32);
 
+impl From<u32> for TokenId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl TokenId {
+    /// Obtians the stored id.
+    pub fn get(&self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub(crate) struct AddedToken {
     id: TokenId,
