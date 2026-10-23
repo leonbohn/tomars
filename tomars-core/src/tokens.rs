@@ -112,6 +112,7 @@ pub(crate) struct Tokenizer {
 /// hopefully document themselves.
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub enum TokenizerLoadError {
     #[error("could not read token file")]
     FileReadError(#[from] std::io::Error),
