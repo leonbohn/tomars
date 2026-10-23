@@ -290,6 +290,8 @@ mod tests {
     use proptest::{num::u8, prelude::*};
     use serde_json::{Map, Value, json};
     use std::collections::HashSet;
+    use std::sync::LazyLock;
+    use tokenizers::Tokenizer as HfTokenizer;
 
     const VOCAB_SIZE: u64 = 50257;
     const EOS_ID: u64 = VOCAB_SIZE - 1;
@@ -606,6 +608,137 @@ mod tests {
         for id in 0..50256u32 {
             let bytes = vocab.token_bytes(TokenId(id)).expect("dense ids");
             assert!(!bytes.is_empty(), "id {id}");
+        }
+    }
+
+    struct Fixture {
+        hf: HfTokenizer,
+        vocab: Vocabulary,
+    }
+
+    /// Loaded once. `None` (tests skip) when GPT2_TOKENIZER is unset, except in CI,
+    /// where a missing file must not turn into a silently green run.
+    static FIXTURE: LazyLock<Option<Fixture>> = LazyLock::new(|| {
+        let Ok(path) = std::env::var("GPT2_TOKENIZER") else {
+            if std::env::var_os("CI").is_some() {
+                panic!("GPT2_TOKENIZER must be set in CI");
+            }
+            eprintln!("GPT2_TOKENIZER not set, skipping roundtrip tests");
+            return None;
+        };
+        let hf = HfTokenizer::from_file(&path).expect("tokenizers crate could not load the file");
+        let vocab = Tokenizer::load_from_file(&path)
+            .unwrap()
+            .into_vocabulary()
+            .unwrap();
+        Some(Fixture { hf, vocab })
+    });
+
+    /// IDs of the reference implementation, without special tokens added.
+    fn reference_ids(f: &Fixture, s: &str) -> Vec<u32> {
+        f.hf.encode(s, false).unwrap().get_ids().to_vec()
+    }
+
+    /// Concatenation of our bytes for the given ids.
+    fn concat_bytes(f: &Fixture, ids: &[u32]) -> Vec<u8> {
+        ids.iter()
+            .flat_map(|&id| {
+                f.vocab
+                    .token_bytes(TokenId(id))
+                    .unwrap_or_else(|| panic!("no bytes for id {id}"))
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    }
+
+    fn assert_roundtrip(f: &Fixture, s: &str) {
+        let ids = reference_ids(f, s);
+        assert_eq!(
+            concat_bytes(f, &ids),
+            s.as_bytes(),
+            "input {s:?}, ids {ids:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_strings_roundtrip() {
+        let Some(f) = &*FIXTURE else { return };
+        for s in [
+            "",
+            " ",
+            "  ",
+            "   leading and trailing   ",
+            "\n",
+            "\n\n",
+            "\t",
+            "Hello world",
+            " part",
+            "Häschen",
+            "日本語のテキスト",
+            "😀🎉",
+            "a\u{0301}", // combining accent
+            "\u{AD}",    // soft hyphen (a re-encoded byte)
+            "\u{A0}",    // no-break space
+            "line one\r\nline two",
+            "don't stop",
+            "1234567890",
+        ] {
+            assert_roundtrip(f, s);
+        }
+    }
+
+    // ---------------------------------------------------------- property tests
+
+    fn text() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => any::<String>(),                                    // arbitrary unicode
+            3 => "[ -~]{0,64}",                                      // printable ASCII
+            2 => "[ \\n\\t\\r]{0,32}[a-zA-Z]{0,8}[ \\n\\t]{0,8}",    // whitespace-heavy
+            2 => "[äöüßÄÖÜéèñ漢字ひらがな😀🎉 ]{0,32}",              // multibyte
+            1 => "\\PC{0,64}",
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Reference encoding -> our bytes -> original bytes.
+        #[test]
+        fn encode_roundtrip(s in text()) {
+            let Some(f) = &*FIXTURE else { return Ok(()) };
+            prop_assume!(!s.contains(END_OF_TEXT_TOKEN));
+            let ids = reference_ids(f, &s);
+            prop_assert_eq!(concat_bytes(f, &ids), s.as_bytes());
+        }
+    }
+
+    // -------------------------------------------------------- vocabulary checks
+
+    #[test]
+    fn vocab_sizes_agree() {
+        let Some(f) = &*FIXTURE else { return };
+        assert_eq!(f.hf.get_vocab_size(true), f.vocab.size());
+    }
+
+    /// Same ids in both implementations. Note: shares unicode_to_byte with the loader,
+    /// so it checks the id mapping, not the byte table itself.
+    #[test]
+    fn every_vocab_entry_matches() {
+        let Some(f) = &*FIXTURE else { return };
+        for (token, id) in f.hf.get_vocab(false) {
+            if token == END_OF_TEXT_TOKEN {
+                continue;
+            }
+            let expected: Vec<u8> = token
+                .chars()
+                .map(|c| unicode_to_byte(c).expect("character outside the byte table"))
+                .collect();
+            assert_eq!(
+                f.vocab.token_bytes(TokenId(id)),
+                Some(&expected[..]),
+                "token {token:?}"
+            );
         }
     }
 }

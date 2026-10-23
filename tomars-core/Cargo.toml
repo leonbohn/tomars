@@ -13,4 +13,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 # use this as oracle for testing that parsing works as intended
-tokenizers = "1.0.0-rc.3"
+tokenizers = "0.23.2"
