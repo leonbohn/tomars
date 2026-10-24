@@ -21,6 +21,7 @@ impl Trie {
             stack.truncate(l + 1);
             for b in &bytes[l..] {
                 let new_node_id = nodes.len();
+                nodes.push(Node::from_parts(None, Vec::default()));
                 let node = nodes
                     .get_mut(*stack.last().expect("stack must not be empty"))
                     .expect("node must be present");
@@ -233,7 +234,7 @@ mod tests {
                 assert!(c < n, "node {id}: child id {c} out of range ({n} nodes)");
                 indegree[c] += 1;
             }
-            if node.children.is_empty() {
+            if node.children.is_empty() && id != 0 {
                 assert!(
                     node.token.is_some(),
                     "leaf node {id} has no associated token"
