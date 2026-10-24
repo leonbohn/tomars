@@ -46,6 +46,14 @@ impl Vocabulary {
     pub fn size(&self) -> usize {
         self.tokens.len() + 1
     }
+
+    /// Gives an iterator over pairs of `TokenId` and assocaited bytes.
+    pub fn token_iter(&self) -> impl IntoIterator<Item = (TokenId, &[u8])> {
+        self.tokens
+            .iter()
+            .enumerate()
+            .map(|(index, token)| (index.into(), token.as_slice()))
+    }
 }
 
 // We build a static lookup table for conversion of unicode to byte
@@ -81,7 +89,7 @@ const fn build_unicode_to_byte_table() -> [Option<u8>; 324] {
     tbl
 }
 
-fn unicode_to_byte(c: char) -> Option<u8> {
+pub(crate) fn unicode_to_byte(c: char) -> Option<u8> {
     UNICODE_TO_BYTE.get(c as usize).copied().flatten()
 }
 #[cfg(test)]
@@ -232,6 +240,12 @@ pub struct TokenId(pub(crate) u32);
 impl From<u32> for TokenId {
     fn from(value: u32) -> Self {
         Self(value)
+    }
+}
+
+impl From<usize> for TokenId {
+    fn from(value: usize) -> Self {
+        Self(value as u32)
     }
 }
 
@@ -627,10 +641,7 @@ mod tests {
             return None;
         };
         let hf = HfTokenizer::from_file(&path).expect("tokenizers crate could not load the file");
-        let vocab = Tokenizer::load_from_file(&path)
-            .unwrap()
-            .into_vocabulary()
-            .unwrap();
+        let vocab = Vocabulary::load_from_file(&path).expect("error when loading vocabulary???");
         Some(Fixture { hf, vocab })
     });
 
